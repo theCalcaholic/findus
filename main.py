@@ -1,17 +1,26 @@
 import logging
 import sys
+import time
+
 from fints.client import FinTS3PinTanClient
 import fints_url
 from getpass import getpass
 import sqlalchemy
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy import select
+from sqlalchemy import select, and_, or_
 from banking import model
 from datetime import date, timedelta, datetime
+import argparse
+import numpy as np
 import math
+from matplotlib import pyplot
+from typing import List
 
 
 logging.basicConfig(level=logging.INFO)
+
+db_engine = sqlalchemy.create_engine('sqlite+pysqlite:///db/testing.db', echo=True, future=True)
+Session = sessionmaker(db_engine)
 
 
 def find_account_name(iban, info):
@@ -24,7 +33,7 @@ def find_account_name(iban, info):
     return name + "Account"
 
 
-def test(blz: str, login: str, password: str):
+def import_transactions(blz: str, login: str, password: str):
 
     fints_host = fints_url.find(bank_code=blz)
     f = FinTS3PinTanClient(blz, login, password, fints_host, product_id=None)
@@ -62,7 +71,7 @@ def test(blz: str, login: str, password: str):
                 own_account = session.execute(select(model.Account).filter(model.Account.iban == account.iban)).scalar()
                 if own_account is None:
                     raise Exception(f"ERROR: Could not find own account with IBAN {own_iban}!")
-                start_date = date.today() - timedelta(days=7)
+                start_date = date.today() - timedelta(days=30)
                 history_end = own_account.history_end
                 if history_end is not None:
                     start_date = max(start_date, history_end.date())
@@ -95,12 +104,79 @@ def test(blz: str, login: str, password: str):
                     session.commit()
 
 
-if __name__ == '__main__':
-    print(sys.argv)
+def import_cmd(args):
+
     pw = getpass('Please enter your Bank password: ')
-    db_engine = sqlalchemy.create_engine('sqlite+pysqlite:///db/testing.db', echo=True, future=True)
-    Session = sessionmaker(db_engine)
     model.set_up(db_engine)
-    test(sys.argv[1], sys.argv[2], pw)
+    import_transactions(args.blz, args.login, pw)
+
+
+def get_account_plot(iban: str, xs: range):
+    with Session() as session:
+        acc: model.Account = session.execute(select(model.Account).filter(model.Account.iban == iban)).scalar()
+
+        def y_fn(days: int, last_val: float):
+            today_start = datetime.combine(date.today(), datetime.min.time())
+            range_start = today_start - timedelta(days=days)
+            range_end = today_start - timedelta(days=days - 1)
+            print(f"Selecting transactions between {range_start} and {range_end}...")
+            transactions = session.query(model.Transaction).filter(and_(
+                        or_(model.Transaction.source_id == acc.id, model.Transaction.target_id == acc.id),
+                        and_(range_end > model.Transaction.time, range_start <= model.Transaction.time)))
+            if len(transactions.all()) == 0:
+                print(f"No transactions found for day {-days}")
+            result = last_val
+            for t in transactions:
+                result -= t.amount if t.target_id == acc.id else -t.amount
+            return result
+
+        ys = [acc.balance]
+        for x in xs[1:]:
+            ys.append(y_fn(x, ys[-1]))
+        # print(ys)
+
+        return ys
+        # pyplot.plot(list(map(lambda a: -a, reversed(xs))), list(reversed(ys)))
+
+
+def plot_cmd(args):
+    xs = range(0, args.days)
+    if args.iban == 'all':
+        with Session() as session:
+            accounts = session.query(model.Account).filter(model.Account.type == model.Account.AccountType.ASSET)
+            ys_list = []
+            labels = []
+            for acc in accounts:
+                labels.append(acc.name)
+                ys_list.append(get_account_plot(acc.iban, xs))
+            pyplot.stackplot(xs, ys_list, labels=labels)
+            pyplot.legend(loc='upper left')
+    else:
+        ys = get_account_plot(args.iban, xs)
+        pyplot.plot(list(map(lambda a: -a, reversed(xs))), list(reversed(ys)))
+
+    pyplot.show()
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers()
+
+    import_parser = subparsers.add_parser('import', help='Import transactions from your bank accounts')
+    import_parser.add_argument('blz', help='The BLZ (Bankleitzahl/Bank identification number) of your bank')
+    import_parser.add_argument('login', help='Your login/user name to your online banking account')
+    import_parser.set_defaults(func=import_cmd)
+
+    plot_parser = subparsers.add_parser('plot', help='Show saldo graph')
+    plot_parser.add_argument('iban', help='The iban of your account')
+    plot_parser.add_argument('days', type=int, help='How many days into the past the graph should be constructed')
+    plot_parser.set_defaults(func=plot_cmd)
+
+    arguments = parser.parse_args()
+    arguments.func(arguments)
+
+
+
+
 
 

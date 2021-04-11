@@ -31,6 +31,7 @@ class Transaction:
         return self.source.is_owned and self.target.is_owned
 
     def __repr__(self):
-        return f'Transaction(id={self.id!r}, source_id={self.source_id}, source={self.source!r}, target_id={self.target_id}, target={self.target!r}, amount={self.amount!r}, message={self.message}' \
+        return f'Transaction(id={self.id!r}, source_id={self.source_id}, #source={self.source!r}, ' \
+               f'target_id={self.target_id}, target={self.target!r}, amount={self.amount!r}, message={self.message}' \
                f'time={self.time!r})'
 
